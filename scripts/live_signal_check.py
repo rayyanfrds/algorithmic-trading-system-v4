@@ -9,6 +9,8 @@ Method
   (still forming) bar, while `primary_prob` was computed from the previous, fully closed bar.
 - The tradable outcome of a decision is therefore the move from this row's open to the next row's
   open (open[i+1] - open[i]).
+- The engine may log several rows for the same hour (the Gold log has 44-51 rows for each Friday-close
+  hour because of the market-closed order-attempt bug). Only the FIRST row per hour is kept.
 - Rows where that move is exactly 0 (market closed / weekend) are dropped.
 - Reports ROC-AUC of `primary_prob` against the sign of that move (rank-based, bootstrap 95% CI)
   and the hit-rate of the emitted BUY/SELL signals.
@@ -19,6 +21,7 @@ import pandas as pd
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LOGS = ROOT / "logs_sample"
+V4_END = "2026-10-03 04:00"      # end of the V4.0 forward-test window
 
 
 def auc(y, s):
@@ -43,7 +46,8 @@ def bootstrap_ci(y, s, n=2000, seed=0):
 def main():
     for name in ("btc", "gold"):
         d = pd.read_csv(LOGS / f"hourly_decisions_{name}.csv", parse_dates=["timestamp"])
-        d = d.sort_values("timestamp").dropna(subset=["open", "primary_prob"]).reset_index(drop=True)
+        d = d.sort_values("timestamp", kind="stable").drop_duplicates("timestamp", keep="first")
+        d = d.dropna(subset=["open", "primary_prob"]).reset_index(drop=True)
         move = d.open.shift(-1) - d.open
         ok = move.notna() & (move != 0)
         y = (move[ok] > 0).astype(int).values
@@ -53,6 +57,9 @@ def main():
         hit = np.where(d.primary_signal[sig] == "BUY", move[sig] > 0, move[sig] < 0).mean()
         print(f"{name.upper():5s} AUC={auc(y, s):.3f} (95% CI {lo:.3f}-{hi:.3f}), n={ok.sum()} bars | "
               f"BUY/SELL hit-rate={hit:.1%} over {sig.sum()} signals")
+        w = d[(d.timestamp <= V4_END) & d.primary_signal.isin(["BUY", "SELL"])]
+        print(f"      meta-gate (v4.0 live, forward-test window): {len(w)} directional signals, "
+              f"{int(w.meta_gate_pass.sum())} passed, {1 - w.meta_gate_pass.mean():.1%} rejected")
 
 
 if __name__ == "__main__":
