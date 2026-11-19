@@ -1,0 +1,26 @@
+{
+  "gold": {
+    "primary_in_sample_auc": 0.782391691690923,
+    "primary_oof_auc": 0.621255540113054,
+    "primary_overfit_gap": 0.1611,
+    "primary_oof_accuracy": 58.7,
+    "primary_oof_brier_score": 0.2401,
+    "meta_baseline_success_rate": 47.25,
+    "meta_oof_auc": 0.4849,
+    "meta_precision_at_054": 48.94,
+    "meta_precision_lift": 1.69,
+    "meta_rejection_rate": 71.41
+  },
+  "btc": {
+    "primary_in_sample_auc": 0.7894826472450512,
+    "primary_oof_auc": 0.6197689329885326,
+    "primary_overfit_gap": 0.1697,
+    "primary_oof_accuracy": 57.98,
+    "primary_oof_brier_score": 0.2391,
+    "meta_baseline_success_rate": 42.58,
+    "meta_oof_auc": 0.5142,
+    "meta_precision_at_054": 45.69,
+    "meta_precision_lift": 3.11,
+    "meta_rejection_rate": 88.02
+  }
+}

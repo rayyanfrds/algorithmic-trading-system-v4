@@ -1,0 +1,15 @@
+# requirements.txt — V4.0 Meta-Trading Engine
+# Install dengan: pip install -r requirements.txt
+#
+# Catatan: MetaTrader5 hanya tersedia di Windows dan memerlukan
+# MetaTrader 5 terminal sudah terinstall di mesin yang sama.
+
+MetaTrader5==5.0.5735
+lightgbm==4.6.0
+pandas==2.3.3
+numpy==2.4.5
+ta==0.11.0
+joblib==1.5.2
+python-dotenv==1.1.1
+scipy==1.17.1
+requests==2.32.3
