@@ -1,26 +1,27 @@
 {
+  "version": "v4.2_tradable_target",
   "gold": {
-    "primary_in_sample_auc": 0.782391691690923,
-    "primary_oof_auc": 0.621255540113054,
-    "primary_overfit_gap": 0.1611,
-    "primary_oof_accuracy": 58.7,
-    "primary_oof_brier_score": 0.2401,
-    "meta_baseline_success_rate": 47.25,
-    "meta_oof_auc": 0.4849,
-    "meta_precision_at_054": 48.94,
-    "meta_precision_lift": 1.69,
-    "meta_rejection_rate": 71.41
+    "primary_in_sample_auc": 0.7190864969331601,
+    "primary_oof_auc": 0.5130071355759429,
+    "primary_overfit_gap": 0.2061,
+    "primary_oof_accuracy": 51.97,
+    "primary_oof_brier_score": 0.2545,
+    "meta_baseline_success_rate": 43.75,
+    "meta_oof_auc": 0.5345,
+    "meta_precision_at_054": 48.41,
+    "meta_precision_lift": 4.67,
+    "meta_rejection_rate": 69.34
   },
   "btc": {
-    "primary_in_sample_auc": 0.7894826472450512,
-    "primary_oof_auc": 0.6197689329885326,
-    "primary_overfit_gap": 0.1697,
-    "primary_oof_accuracy": 57.98,
-    "primary_oof_brier_score": 0.2391,
-    "meta_baseline_success_rate": 42.58,
-    "meta_oof_auc": 0.5142,
-    "meta_precision_at_054": 45.69,
-    "meta_precision_lift": 3.11,
-    "meta_rejection_rate": 88.02
+    "primary_in_sample_auc": 0.7051920830733291,
+    "primary_oof_auc": 0.5134987203952721,
+    "primary_overfit_gap": 0.1917,
+    "primary_oof_accuracy": 51.59,
+    "primary_oof_brier_score": 0.2557,
+    "meta_baseline_success_rate": 39.85,
+    "meta_oof_auc": 0.4815,
+    "meta_precision_at_054": 38.75,
+    "meta_precision_lift": -1.1,
+    "meta_rejection_rate": 90.27
   }
 }

@@ -11,7 +11,7 @@ Dual-asset (XAUUSD, BTCUSD) H1 trading system for MetaTrader 5: a LightGBM direc
 - **What the evidence does and does not show:**
   - 62 trades is a small sample: the 95% confidence interval of the win rate is roughly **42%–67%**, and the test window coincided with a strong Bitcoin rally.
   - **83% of gross profit came from 18 take-profit exits.**
-  - **The directional signal has no demonstrated out-of-sample edge.** In the live decision logs its ROC-AUC against the next hour's move is ≈ 0.50 (see [Live check of the primary signal](#live-check-of-the-primary-signal)). The profit is better explained by payoff asymmetry (TP 2.0× ATR vs SL 1.5× ATR) in a trending month than by prediction accuracy.
+  - **The directional signal has no out-of-sample edge.** In the live decision logs its ROC-AUC against the next hour's move is ≈ 0.50, and the offline AUC of 0.62 falls to 0.49–0.52 once the target is recomputed on tradable prices (see [Live check of the primary signal](#live-check-of-the-primary-signal)). The demo profit therefore cannot be credited to forecasting skill. A driftless price reaches a +2.0× ATR take-profit before a −1.5× ATR stop only about 43% of the time, so the exit bracket alone creates no edge; a trending Bitcoin month and chance are the more plausible explanations, and 62 trades cannot separate them.
 - **Why it is still worth reading:** the repository shows the full iteration history (V1 → V4), the bugs found and fixed, a leakage audit, and scripts that let you recompute every headline number from the raw logs.
 
 ## What was forward-tested vs. what the code trains today
@@ -22,6 +22,7 @@ Dual-asset (XAUUSD, BTCUSD) H1 trading system for MetaTrader 5: a LightGBM direc
 | Meta-model input | `primary_prob` computed **in-sample** on the primary model's own training data | `primary_prob` generated **out-of-fold** (`TimeSeriesSplit`, 5 folds) |
 | Status | Produced all 62 trades reported below | Retrained 18 Nov 2026, **never forward-tested** |
 | Known flaw | Meta-model learned from over-confident in-sample probabilities (leakage) | Fixes that flaw; the other open issues below remain |
+| Training target | Next-bar direction of the mid-range price `(High + Low) / 2` | **Same.** This is the source of the inflated offline AUC (see below); fix pending |
 
 All forward-test statistics in this README belong to **v4.0**. The offline validation metrics belong to the **v4.1** pipeline, so the two must not be read as one continuous experiment.
 
@@ -86,7 +87,7 @@ An annualized Sharpe ratio is deliberately **not reported**: 24 days is far too 
 
 \*Closed-trade balance of that asset's trades alone, starting from $9,511.11.
 
-Gold's win rate is exactly a coin flip. Its profit comes from the payoff ratio, not from accuracy.
+Gold's win rate is exactly a coin flip; its profit comes from average wins ($51) exceeding average losses ($31) in this sample, which with 28 trades is well within chance.
 
 ### Where the money came from
 
@@ -129,6 +130,7 @@ How to read this:
 
 - The primary model overfits heavily (about 16 AUC points between in-sample and out-of-fold).
 - The meta-model has **no measurable skill**: AUC is around 0.5, and the precision lifts are roughly 1 standard error or less at these sample sizes, i.e. indistinguishable from noise.
+- The 0.62 out-of-fold AUC does not survive a tradable target (see the next section).
 - The gate's live rejection rates (BTC 77.6%, Gold 57.1% of directional signals in the decision logs) differ from the offline rates, and the two come from different meta-models (v4.0 live, v4.1 offline), so the offline numbers do not explain the live results.
 
 ## Live check of the primary signal
@@ -140,7 +142,30 @@ The per-hour decision logs record every `primary_prob` the live engine produced.
 | BTCUSD | 597 | **0.503** (0.458 – 0.549) | 49.1% (287 signals) |
 | XAUUSD | 378 | **0.519** (0.460 – 0.577) | 53.5% (157 signals) |
 
-The offline out-of-fold AUC of 0.62 is **not** visible live: the confidence intervals exclude it. The most likely explanation (a hypothesis, not yet tested) is that the training target and the triple-barrier entry price are defined on mid-range prices, `(High + Low) / 2`, rather than on a price one could actually trade. Part of `Mid(t+1) − Mid(t)` is already known when the prediction is made (where the bar closed relative to its own mid-range), which inflates offline AUC without producing a tradable edge. The planned test is to recompute the out-of-fold AUC with a tradable target (next-bar open-to-close or close-to-close) and see whether it collapses toward 0.50.
+The offline out-of-fold AUC of 0.62 is **not** visible live: the confidence intervals exclude it.
+
+### Why the offline AUC was inflated
+
+The training target and the triple-barrier entry price are defined on mid-range prices, `(High + Low) / 2`, which cannot be traded: an order sent when bar *t* closes fills near `Close[t]`, not `Mid[t]`. Where the bar closed relative to its own mid-range is already known at prediction time and is a large part of `Mid[t+1] − Mid[t]`, so the target is partly predictable without any forecasting skill.
+
+To test this, the primary model was retrained on the same 2,500 bars per asset with the same 5-fold `TimeSeriesSplit`, changing only the target:
+
+| Instrument | Target | OOF AUC | OOF accuracy |
+|---|---|---|---|
+| XAUUSD | Mid-to-mid (original) | 0.620 | 58.7% |
+| XAUUSD | Close-to-close (tradable) | 0.487 | 48.2% |
+| XAUUSD | Next open-to-close (tradable) | 0.491 | 50.0% |
+| BTCUSD | Mid-to-mid (original) | 0.623 | 59.0% |
+| BTCUSD | Close-to-close (tradable) | 0.515 | 51.5% |
+| BTCUSD | Next open-to-close (tradable) | 0.515 | 51.5% |
+
+About 2,450 valid bars per asset. The original-target figures differ slightly from the offline table above because this is a separate run.
+
+With a tradable target the out-of-fold AUC drops to 0.49–0.52, in line with the live AUC of 0.50–0.52 measured above. Each estimate carries roughly ±0.03–0.05 of sampling noise, so the honest reading is "no detectable directional skill", not "exactly zero". Script: `scripts/tradable_target_experiment.py`.
+
+### What explains the demo profit?
+
+Not forecasting skill. The exit bracket does not create an edge by itself either: for a driftless price, a +2.0× ATR take-profit is reached before a −1.5× ATR stop with probability 1.5 / (2.0 + 1.5) ≈ 43%, which has zero expected value before costs. The more plausible explanations are the strongly trending Bitcoin month (83% of gross profit came from 18 take-profit exits) and chance; with 62 trades the two cannot be separated. Treat the v4.0 and v4.1 models as having no demonstrated edge until they are retrained and re-validated on a tradable target.
 
 ## Version history
 
@@ -163,7 +188,7 @@ Takeaway: V2.0 failed through its exit logic and costs, V3.6 was flat, and V4.0 
 | **Correlation guard stuck at 0.28 during the demo.** BTC trades 24/7 while Gold closes on weekends, so the 480-bar correlation was always `NaN` and fell back to a default. The haircut never activated. | Patched (800 bars fetched, `min_periods=60`); not re-validated in a later live session |
 | **Repeated order attempts while the market was closed** (17 tries on 25 Sep, 20:00 UTC). | Patched (`trade_mode` check) |
 | **Meta-model trained on in-sample primary probabilities.** | Fixed in v4.1 (out-of-fold); not forward-tested |
-| **Training target uses mid-range prices.** Offline AUC 0.62 vs live AUC ≈ 0.50. | Open, see above |
+| **Training target and labeler entry use mid-range prices** (non-tradable). Confirmed as the source of the inflated 0.62 offline AUC. | Open: `train_v4_meta_system.py` and `triple_barrier_labeler.py` still use it; retraining on tradable prices is the next step |
 | **Statistical power.** 62 trades, one regime, one month. | Needs 150–200+ trades across trending, ranging and shock regimes |
 | **No transaction costs in training or offline metrics.** The training script creates a constant `Spread` column but never uses it, so offline labels and metrics are gross of spread, slippage and requotes. Only the demo forward test reflects real fills. | Open |
 | **Train/serve skew in the meta-model.** It is trained on every bar with the side taken at P ≥ 0.50, but live it only sees signals outside the 0.45–0.55 dead-band. Offline rejection rates are therefore not comparable with live ones. | Open |
@@ -184,6 +209,7 @@ algorithmic-trading-system-v4/
 ├── models/
 │   ├── v4.0_forward_tested/           # models that produced the 62 trades
 │   ├── v4.1_oof/                      # retrained with out-of-fold meta inputs (not forward-tested)
+│   ├── v4.2_tradable_target/          # retrained on tradable close-to-close targets
 │   └── v4_metadata.json
 ├── logs_sample/
 │   ├── hourly_decisions_gold.csv
@@ -191,11 +217,11 @@ algorithmic-trading-system-v4/
 │   └── mt5_deals_history_demo_sept2026.csv   # the 62 closed V4.0 deals only
 ├── scripts/
 │   ├── verify_forward_test.py         # recompute forward-test statistics from the deal history
-│   └── live_signal_check.py           # out-of-sample AUC of the live primary signal
+│   ├── live_signal_check.py           # out-of-sample AUC of the live primary signal
+│   └── tradable_target_experiment.py  # reproduce target tradability comparison
 ├── docs/
 │   ├── live_equity_growth_chart.png
-│   ├── OFFLINE_VALIDATION_REPORT.json
-│   └── EVALUASI_FORWARD_TEST_V4_DEMO.md
+│   └── OFFLINE_VALIDATION_REPORT.json
 ├── run_v4_live_system.bat
 ├── requirements.txt
 └── .env.example
@@ -215,6 +241,7 @@ python src/live_forward_test_v4_meta.py     # live engine (demo account recommen
 python src/train_v4_meta_system.py          # retrain; needs H1 data in data/
 python scripts/verify_forward_test.py       # recompute the forward-test statistics
 python scripts/live_signal_check.py         # recompute the live AUC check
+python scripts/tradable_target_experiment.py # reproduce target tradability comparison
 ```
 
 Training data is not included. Export H1 bars for XAUUSD and BTCUSD from the MT5 terminal (History Center) and save them as the parquet files named in `src/train_v4_meta_system.py`.

@@ -9,10 +9,11 @@ untuk Data H1 XAUUSD & BTCUSD:
 3. Vertical Barrier (Time)    : max_holding_bars (default: 12 bars)
 
 CATATAN METODOLOGIS & KONTROL DATA LEAKAGE:
-Fungsi ini melakukan forward scan sepanjang horizon `max_holding_bars` untuk menentukan barrier mana
-yang tersentuh pertama kali. Karena event horizon saling tumpang tindih (overlapping labels),
-proses training model wajib menggunakan validasi temporal (seperti TimeSeriesSplit atau Purged K-Fold)
-dengan embargo guna mencegah kontaminasi informasi dari masa depan ke masa lalu.
+- Tradable Target Formulation: Entry dan exit vertical barrier dievaluasi menggunakan harga riil yang dapat
+  dieksekusi (`Close` pada bar t / `Open` pada bar t+1), BUKAN harga non-tradable mid-range `(High + Low) / 2`.
+  Penggunaan mid-range price terbukti menyebabkan kebocoran rentang intra-bar (lookahead artifact).
+- Validasi Temporal: Karena event horizon saling tumpang tindih (overlapping labels), proses training
+  wajib menggunakan validasi temporal (seperti TimeSeriesSplit) dengan out-of-fold primary probabilities.
 """
 
 import numpy as np
@@ -32,7 +33,8 @@ def apply_triple_barrier(
     pt_mult: float = 2.0,
     sl_mult: float = 1.5,
     max_holding_bars: int = 12,
-    atr_window: int = 14
+    atr_window: int = 14,
+    entry_col: str = "Close"
 ) -> pd.DataFrame:
     """
     Menerapkan Triple Barrier Method pada setiap bar event t:
@@ -40,6 +42,7 @@ def apply_triple_barrier(
     - pt_mult     : Pengali ATR untuk target profit
     - sl_mult     : Pengali ATR untuk batas stop loss
     - max_holding_bars: Batas waktu lilin maksimum (Vertical Barrier)
+    - entry_col   : Kolom harga eksekusi entry (default: 'Close' untuk target tradable)
     
     Returns DataFrame dengan kolom:
     - barrier_touch_time: Waktu saat salah satu barrier pertama kali tersentuh
@@ -48,8 +51,12 @@ def apply_triple_barrier(
     - meta_target       : 1 jika mencapai PT sebelum SL/timeout, 0 jika gagal (kena SL atau rugi di timeout)
     """
     df = df.copy()
-    if "MidPrice" not in df.columns:
-        df["MidPrice"] = (df["High"] + df["Low"]) / 2.0
+    if entry_col not in df.columns:
+        if "Close" in df.columns:
+            entry_col = "Close"
+        else:
+            df["Close"] = (df["High"] + df["Low"]) / 2.0
+            entry_col = "Close"
         
     atr = compute_atr_volatility(df, window=atr_window)
     df["atr_dyn"] = atr
@@ -63,7 +70,7 @@ def apply_triple_barrier(
             continue
 
         t_entry = df.index[i]
-        px_entry = df["MidPrice"].iloc[i]
+        px_entry = df[entry_col].iloc[i]
         vol = df["atr_dyn"].iloc[i]
 
         if np.isnan(vol) or vol <= 0:
@@ -74,7 +81,7 @@ def apply_triple_barrier(
 
         touch_idx = None
         touch_type = "TIME"
-        exit_px = df["MidPrice"].iloc[i + max_holding_bars]
+        exit_px = df[entry_col].iloc[i + max_holding_bars]
         exit_time = df.index[i + max_holding_bars]
 
         # Scan jendela ke depan (strictly forward path)

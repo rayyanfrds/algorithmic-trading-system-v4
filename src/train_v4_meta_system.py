@@ -2,16 +2,16 @@
 """
 train_v4_meta_system.py
 =======================
-Production Model Training, Out-Of-Fold (OOF) Validation & Serialization Engine for V4.0:
+Production Model Training, Out-Of-Fold (OOF) Validation & Serialization Engine for V4.2 (Tradable Target):
 
-ANTI-LEAKAGE ARCHITECTURE (Addressing In-Sample Meta Overfitting):
-1. Primary Directional Classifier is trained with TimeSeriesSplit (5-fold temporal expansion).
-2. Primary probabilities for Meta-Model training are generated STRICTLY OUT-OF-FOLD (OOF).
-   The meta-model never sees in-sample primary probabilities, preventing it from learning on
-   over-optimistic, memorized training distributions.
-3. Offline validation metrics (In-Sample AUC, Out-Of-Fold AUC, Brier Score, Meta Precision Lift)
-   are calculated and saved to validate offline generalization prior to deployment.
-4. Serializes models (.pkl) and offline validation manifests into models/ directory.
+ANTI-LEAKAGE & TRADABILITY ARCHITECTURE:
+1. Tradable Target: Target is ln(Close[t+1] / Close[t]), matching actual MT5 fill at bar t close.
+   Eliminates the intra-bar range leakage artifact caused by MidPrice = (High + Low) / 2.
+2. Primary Directional Classifier is trained with TimeSeriesSplit (5-fold temporal expansion).
+3. Primary probabilities for Meta-Model training are generated STRICTLY OUT-OF-FOLD (OOF).
+   The meta-model never sees in-sample primary probabilities.
+4. Triple Barrier labels use Close[t] as entry price and Close as exit price at vertical barrier timeout.
+5. Serializes models (.pkl) into models/v4.2_tradable_target/ and manifest into models/v4_metadata.json.
 """
 
 import os
@@ -31,12 +31,15 @@ if hasattr(sys.stdout, "reconfigure"):
 
 # Dynamic project paths
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+SRC_DIR      = pathlib.Path(__file__).resolve().parent
 DATA_DIR     = PROJECT_ROOT / "data"
 if not DATA_DIR.exists() and (PROJECT_ROOT.parent / "data").exists():
     DATA_DIR = PROJECT_ROOT.parent / "data"
 
 MODELS_DIR   = PROJECT_ROOT / "models"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
+TARGET_MODELS_DIR = MODELS_DIR / "v4.2_tradable_target"
+TARGET_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 BTC_PARQUET  = DATA_DIR / "btcusd_h1_raw.parquet"
 GOLD_PARQUET = DATA_DIR / "xauusd_h1_macro.parquet"
@@ -79,8 +82,9 @@ def load_data():
 
 def engineer_base_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df["log_ret"] = np.log(df["MidPrice"] / df["MidPrice"].shift(1))
-    df["target_1b"] = (df["log_ret"].shift(-1) > 0).astype(int)
+    # Tradable log-return and directional target using Close (fill at bar t close / bar t+1 open)
+    df["log_ret"] = np.log(df["Close"] / df["Close"].shift(1))
+    df["target_1b"] = (np.log(df["Close"].shift(-1) / df["Close"]) > 0).astype(int)
 
     for i in range(1, 6):
         df[f"ret_lag_{i}"] = df["log_ret"].shift(i)
@@ -92,7 +96,7 @@ def engineer_base_features(df: pd.DataFrame) -> pd.DataFrame:
     df["atr_14"] = ta.volatility.AverageTrueRange(
         df["High"], df["Low"], df["Close"], window=14
     ).average_true_range()
-    df["norm_atr"] = df["atr_14"] / (df["MidPrice"] + 1e-9)
+    df["norm_atr"] = df["atr_14"] / (df["Close"] + 1e-9)
 
     df["rsi_14"]    = ta.momentum.RSIIndicator(df["Close"], window=14).rsi()
     macd            = ta.trend.MACD(df["Close"])
@@ -100,17 +104,17 @@ def engineer_base_features(df: pd.DataFrame) -> pd.DataFrame:
     df["macd_diff"] = macd.macd_diff()
     df["roc_10"]    = ta.momentum.ROCIndicator(df["Close"], window=10).roc()
 
-    df["sma_20"]      = df["MidPrice"].rolling(20).mean()
-    df["dist_sma_20"] = (df["MidPrice"] - df["sma_20"]) / df["sma_20"]
-    df["sma_50"]      = df["MidPrice"].rolling(50).mean()
-    df["dist_sma_50"] = (df["MidPrice"] - df["sma_50"]) / df["sma_50"]
+    df["sma_20"]      = df["Close"].rolling(20).mean()
+    df["dist_sma_20"] = (df["Close"] - df["sma_20"]) / df["sma_20"]
+    df["sma_50"]      = df["Close"].rolling(50).mean()
+    df["dist_sma_50"] = (df["Close"] - df["sma_50"]) / df["sma_50"]
 
     df.dropna(inplace=True)
     return df
 
 def train_and_validate_symbol(symbol: str, df_feat: pd.DataFrame, train_lookback_bars: int = 2500, n_splits: int = 5):
     print(f"\n" + "="*80)
-    print(f"📦 TRAINING & OUT-OF-FOLD (OOF) VALIDATION: {symbol}")
+    print(f"📦 TRAINING & OUT-OF-FOLD (OOF) VALIDATION (v4.2 Tradable Target): {symbol}")
     print("="*80)
 
     T = len(df_feat)
@@ -123,7 +127,6 @@ def train_and_validate_symbol(symbol: str, df_feat: pd.DataFrame, train_lookback
     # -------------------------------------------------------------------------
     # 1. OUT-OF-FOLD (OOF) PRIMARY MODEL CROSS-VALIDATION
     # -------------------------------------------------------------------------
-    # Use TimeSeriesSplit to avoid look-ahead bias and leakages
     tscv = TimeSeriesSplit(n_splits=n_splits)
     oof_primary_probs = np.full(len(train_df), np.nan)
 
@@ -164,7 +167,6 @@ def train_and_validate_symbol(symbol: str, df_feat: pd.DataFrame, train_lookback
     # -------------------------------------------------------------------------
     # 2. GENERATE OOF TRIPLE BARRIER EVENTS FOR META-MODEL
     # -------------------------------------------------------------------------
-    # The meta-model MUST be trained on OOF primary probabilities, NEVER in-sample!
     valid_indices = np.where(valid_mask)[0]
     df_oof = train_df.iloc[valid_indices].copy()
     df_oof["primary_prob"] = val_probs
@@ -173,7 +175,7 @@ def train_and_validate_symbol(symbol: str, df_feat: pd.DataFrame, train_lookback
     # Direction side proposed strictly by OOF predictions
     p_side_oof = pd.Series(np.where(val_probs >= 0.50, 1, -1), index=df_oof.index)
 
-    events = apply_triple_barrier(df_oof, p_side_oof, pt_mult=2.0, sl_mult=1.5, max_holding_bars=12)
+    events = apply_triple_barrier(df_oof, p_side_oof, pt_mult=2.0, sl_mult=1.5, max_holding_bars=12, entry_col="Close")
     df_oof["meta_target"] = events["meta_target"]
 
     meta_train_data = df_oof.dropna(subset=["meta_target"]).copy()
@@ -217,7 +219,6 @@ def train_and_validate_symbol(symbol: str, df_feat: pd.DataFrame, train_lookback
     # -------------------------------------------------------------------------
     # 4. TRAIN FINAL PRODUCTION MODELS & SERIALIZE
     # -------------------------------------------------------------------------
-    # Final Meta-Model is trained on the full OOF-clean dataset
     final_meta_model = lgb.LGBMClassifier(
         n_estimators=100, learning_rate=0.03, max_depth=3,
         subsample=0.8, colsample_bytree=0.8, min_child_samples=40,
@@ -226,13 +227,13 @@ def train_and_validate_symbol(symbol: str, df_feat: pd.DataFrame, train_lookback
     final_meta_model.fit(X_meta, y_meta)
 
     prefix = "gold" if "XAU" in symbol or "GOLD" in symbol else "btc"
-    primary_path = MODELS_DIR / f"{prefix}_primary_v4.pkl"
-    meta_path    = MODELS_DIR / f"{prefix}_meta_v4.pkl"
+    primary_path = TARGET_MODELS_DIR / f"{prefix}_primary_v4.pkl"
+    meta_path    = TARGET_MODELS_DIR / f"{prefix}_meta_v4.pkl"
 
     joblib.dump(full_primary_model, primary_path)
     joblib.dump(final_meta_model, meta_path)
 
-    print(f"   • Serialized Production Artifacts Saved:")
+    print(f"   • Serialized Production Artifacts Saved (v4.2):")
     print(f"     ├─ Primary : {primary_path}")
     print(f"     └─ Meta    : {meta_path}")
 
@@ -264,7 +265,7 @@ def train_and_validate_symbol(symbol: str, df_feat: pd.DataFrame, train_lookback
 
 def main():
     print("="*85)
-    print("🚀 PIPELINE TRAINING & VALIDASI OUT-OF-FOLD (OOF) PRODUKSI V4.0")
+    print("🚀 PIPELINE TRAINING & VALIDASI OUT-OF-FOLD (OOF) PRODUKSI V4.2 [TRADABLE TARGET]")
     print("="*85)
 
     df_btc_raw, df_gold_raw = load_data()
@@ -275,13 +276,13 @@ def main():
     report_btc  = train_and_validate_symbol("BTCUSD", df_btc_feat)
 
     manifest = {
-        "system_version": "v4.0_meta_triple_barrier",
+        "system_version": "v4.2_tradable_target",
         "created_at": pd.Timestamp.now().isoformat(),
         "pt_multiplier": 2.0,
         "sl_multiplier": 1.5,
         "max_holding_bars": 12,
         "meta_gate_threshold": 0.54,
-        "anti_leakage_method": "TimeSeriesSplit Out-Of-Fold (OOF) primary probabilities",
+        "anti_leakage_method": "TimeSeriesSplit Out-Of-Fold (OOF) on Tradable Close-to-Close Targets",
         "primary_features": PRIMARY_FEATURES,
         "meta_features": META_FEATURES,
         "correlation_guard": {
@@ -306,19 +307,28 @@ def main():
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 
+    target_manifest_path = TARGET_MODELS_DIR / "v4_metadata.json"
+    with open(target_manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+
     val_report_path = PROJECT_ROOT / "docs" / "OFFLINE_VALIDATION_REPORT.json"
     val_report_path.parent.mkdir(parents=True, exist_ok=True)
     with open(val_report_path, "w", encoding="utf-8") as f:
         json.dump({
+            "version": "v4.2_tradable_target",
             "gold": report_gold["offline_validation"],
             "btc": report_btc["offline_validation"]
         }, f, indent=2)
 
     print("\n" + "="*85)
-    print("✅ TRAINING & OOF VALIDASI SELESAI DENGAN SUKSES!")
+    print("✅ TRAINING & OOF VALIDASI V4.2 SELESAI DENGAN SUKSES!")
     print(f"   • Metadata Manifest: {manifest_path}")
+    print(f"   • Target Models Dir: {TARGET_MODELS_DIR}")
     print(f"   • Offline Validation Report: {val_report_path}")
     print("="*85)
+
+if __name__ == "__main__":
+    main()
 
 if __name__ == "__main__":
     main()

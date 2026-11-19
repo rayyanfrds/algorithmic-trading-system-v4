@@ -4,7 +4,7 @@ color 0A
 cd /d "%~dp0"
 
 echo ===============================================================================
-echo   PROJEK PRIME V4.0 - DUAL-ASSET META-TRADING LIVE SYSTEM
+echo   ALGORITHMIC TRADING SYSTEM V4 - DUAL-ASSET META-TRADING LIVE SYSTEM
 echo   - Model Primer: LightGBM Directional Classifier
 echo   - Meta-Model Gate: P(Meta) Threshold 0.54 (Bet Sizing 0.60x - 1.20x)
 echo   - Correlation Guard: 480-Bar Dynamic Proportional Haircut
