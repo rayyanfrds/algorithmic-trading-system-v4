@@ -16,15 +16,16 @@ Dual-asset (XAUUSD, BTCUSD) H1 trading system for MetaTrader 5: a LightGBM direc
 
 ## What was forward-tested vs. what the code trains today
 
-| | **v4.0 (forward-tested)** | **v4.1 (current training script)** |
-|---|---|---|
-| Primary model | LightGBM classifier, trained on the last 2,500 H1 bars | identical (same model files) |
-| Meta-model input | `primary_prob` computed **in-sample** on the primary model's own training data | `primary_prob` generated **out-of-fold** (`TimeSeriesSplit`, 5 folds) |
-| Status | Produced all 62 trades reported below | Retrained 18 Nov 2026, **never forward-tested** |
-| Known flaw | Meta-model learned from over-confident in-sample probabilities (leakage) | Fixes that flaw; the other open issues below remain |
-| Training target | Next-bar direction of the mid-range price `(High + Low) / 2` | **Same.** This is the source of the inflated offline AUC (see below); fix pending |
+| | **v4.0 (forward-tested)** | **v4.1** | **v4.2 (current training script)** |
+|---|---|---|---|
+| Training target | Next-bar direction of the mid-range price `(High + Low) / 2` | same as v4.0 | Next-bar **close-to-close** direction (tradable) |
+| Triple-barrier entry price | Bar mid-range | same as v4.0 | `Close` of the signal bar |
+| Meta-model input | `primary_prob` computed **in-sample** (leakage) | out-of-fold (`TimeSeriesSplit`, 5 folds) | out-of-fold |
+| Primary model | LightGBM, last 2,500 H1 bars | identical files to v4.0 | retrained |
+| Offline primary OOF AUC | 0.62 (artifact of the target) | 0.62 (artifact of the target) | **0.51** |
+| Status | Produced all 62 trades below | Retrained 18 Nov 2026, never forward-tested | Retrained 19 Nov 2026, never forward-tested |
 
-All forward-test statistics in this README belong to **v4.0**. The offline validation metrics belong to the **v4.1** pipeline, so the two must not be read as one continuous experiment.
+All forward-test statistics in this README belong to **v4.0**. v4.1 and v4.2 were validated offline only, so forward-test and offline figures must not be read as one continuous experiment.
 
 ## Architecture
 
@@ -111,38 +112,39 @@ The 18 take-profit exits equal **83.1% of gross profit** ($2,034.13). In a low-v
 
 The last week's win rate sits at break-even. With 17 trades it is impossible to tell noise from the start of a regime change.
 
-## Offline validation (v4.1 pipeline)
+## Offline validation (v4.2 pipeline, tradable target)
 
-Run on 2,500 H1 bars per asset (Gold: 19 Mar – 20 Aug 2026, BTC: 26 May – 07 Sep 2026) with `TimeSeriesSplit`; metrics are in `docs/OFFLINE_VALIDATION_REPORT.json`.
+Run on 2,500 H1 bars per asset (Gold: 19 Mar – 20 Aug 2026, BTC: 26 May – 07 Sep 2026) with a 5-fold `TimeSeriesSplit` and out-of-fold primary probabilities; metrics are in `docs/OFFLINE_VALIDATION_REPORT.json`.
 
 | Metric | Gold | BTC |
 |---|---|---|
-| Primary in-sample AUC | 0.782 | 0.789 |
-| **Primary out-of-fold AUC** | **0.621** | **0.620** |
-| Primary OOF accuracy / Brier | 58.7% / 0.240 | 58.0% / 0.239 |
-| Meta baseline success rate (no gate) | 47.25% | 42.58% |
-| **Meta-model OOF AUC** | **0.485** | **0.514** |
-| Meta precision at P(meta) ≥ 0.54 | 48.94% | 45.69% |
-| Precision lift vs baseline | +1.69 pp | +3.11 pp |
-| Signals rejected by the gate | 71.4% | 88.0% |
+| Primary in-sample AUC | 0.719 | 0.705 |
+| **Primary out-of-fold AUC** | **0.513** | **0.513** |
+| Primary OOF accuracy / Brier | 52.0% / 0.2545 | 51.6% / 0.2557 |
+| Meta baseline success rate (no gate) | 43.75% | 39.85% |
+| **Meta-model OOF AUC** | **0.535** | **0.482** |
+| Meta precision at P(meta) ≥ 0.54 | 48.41% | 38.75% |
+| Precision lift vs baseline | +4.67 pp | −1.10 pp |
+| Signals rejected by the gate | 69.3% | 90.3% |
 
 How to read this:
 
-- The primary model overfits heavily (about 16 AUC points between in-sample and out-of-fold).
-- The meta-model has **no measurable skill**: AUC is around 0.5, and the precision lifts are roughly 1 standard error or less at these sample sizes, i.e. indistinguishable from noise.
-- The 0.62 out-of-fold AUC does not survive a tradable target (see the next section).
-- The gate's live rejection rates (BTC 77.6%, Gold 57.1% of directional signals in the decision logs) differ from the offline rates, and the two come from different meta-models (v4.0 live, v4.1 offline), so the offline numbers do not explain the live results.
+- The primary model overfits heavily (about 0.2 AUC between in-sample and out-of-fold) and its out-of-fold AUC of 0.51 is at noise level.
+- The meta-model shows a small positive lift on Gold and a negative one on BTC. Because triple-barrier labels span up to 12 overlapping bars, the effective sample is far smaller than the 2,055 events, so the Gold lift cannot be called skill.
+- The earlier 0.62 primary AUC (v4.0 / v4.1, mid-range target) was an artifact; see below.
 
 ## Live check of the primary signal
 
-The per-hour decision logs record every `primary_prob` the live engine produced. Because the models were frozen before the forward test, these are genuine out-of-sample predictions. Reproduce with `python scripts/live_signal_check.py`.
+The per-hour decision logs record every `primary_prob` the live engine produced. Because the models were frozen before the forward test, these are genuine out-of-sample predictions of the **v4.0** model. Reproduce with `python scripts/live_signal_check.py`.
 
 | Instrument | Bars | ROC-AUC vs next-hour move (95% CI) | BUY/SELL hit-rate |
 |---|---|---|---|
-| BTCUSD | 597 | **0.503** (0.458 – 0.549) | 49.1% (287 signals) |
-| XAUUSD | 378 | **0.519** (0.460 – 0.577) | 53.5% (157 signals) |
+| BTCUSD | 597 | **0.502** (0.457 – 0.547) | 49.1% (287 signals) |
+| XAUUSD | 378 | **0.505** (0.446 – 0.563) | 51.6% (153 signals) |
 
-The offline out-of-fold AUC of 0.62 is **not** visible live: the confidence intervals exclude it.
+The offline out-of-fold AUC of 0.62 is **not** visible live: the confidence intervals exclude it. In the same window the live meta-gate rejected 77.5% (BTC) and 72.5% (Gold) of directional signals.
+
+*Data note:* the engine can log several rows per hour. The Gold log has 604 rows but only 379 distinct hours, because the Friday-close hour (20:00 UTC) was logged 44–51 times by the market-closed bug listed below. The script keeps the first row of each hour.
 
 ### Why the offline AUC was inflated
 
@@ -159,13 +161,13 @@ To test this, the primary model was retrained on the same 2,500 bars per asset w
 | BTCUSD | Close-to-close (tradable) | 0.515 | 51.5% |
 | BTCUSD | Next open-to-close (tradable) | 0.515 | 51.5% |
 
-About 2,450 valid bars per asset. The original-target figures differ slightly from the offline table above because this is a separate run.
+About 2,450 valid bars per asset. The original-target figures come from a separate run of the experiment (the earlier v4.1 report gave 0.621 and 0.620).
 
-With a tradable target the out-of-fold AUC drops to 0.49–0.52, in line with the live AUC of 0.50–0.52 measured above. Each estimate carries roughly ±0.03–0.05 of sampling noise, so the honest reading is "no detectable directional skill", not "exactly zero". Script: `scripts/tradable_target_experiment.py`.
+With a tradable target the out-of-fold AUC drops to 0.49–0.52, in line with the live AUC of about 0.50 measured above. Each estimate carries roughly ±0.03–0.05 of sampling noise, so the honest reading is "no detectable directional skill", not "exactly zero". Script: `scripts/tradable_target_experiment.py`.
 
 ### What explains the demo profit?
 
-Not forecasting skill. The exit bracket does not create an edge by itself either: for a driftless price, a +2.0× ATR take-profit is reached before a −1.5× ATR stop with probability 1.5 / (2.0 + 1.5) ≈ 43%, which has zero expected value before costs. The more plausible explanations are the strongly trending Bitcoin month (83% of gross profit came from 18 take-profit exits) and chance; with 62 trades the two cannot be separated. Treat the v4.0 and v4.1 models as having no demonstrated edge until they are retrained and re-validated on a tradable target.
+Not forecasting skill. The exit bracket does not create an edge by itself either: for a driftless price, a +2.0× ATR take-profit is reached before a −1.5× ATR stop with probability 1.5 / (2.0 + 1.5) ≈ 43%, which has zero expected value before costs. The more plausible explanations are the strongly trending Bitcoin month (83% of gross profit came from 18 take-profit exits) and chance; with 62 trades the two cannot be separated. Retraining on a tradable target (v4.2) gives an out-of-fold AUC of 0.51 on both assets, so none of the versions has a demonstrated directional edge.
 
 ## Version history
 
@@ -188,7 +190,8 @@ Takeaway: V2.0 failed through its exit logic and costs, V3.6 was flat, and V4.0 
 | **Correlation guard stuck at 0.28 during the demo.** BTC trades 24/7 while Gold closes on weekends, so the 480-bar correlation was always `NaN` and fell back to a default. The haircut never activated. | Patched (800 bars fetched, `min_periods=60`); not re-validated in a later live session |
 | **Repeated order attempts while the market was closed** (17 tries on 25 Sep, 20:00 UTC). | Patched (`trade_mode` check) |
 | **Meta-model trained on in-sample primary probabilities.** | Fixed in v4.1 (out-of-fold); not forward-tested |
-| **Training target and labeler entry use mid-range prices** (non-tradable). Confirmed as the source of the inflated 0.62 offline AUC. | Open: `train_v4_meta_system.py` and `triple_barrier_labeler.py` still use it; retraining on tradable prices is the next step |
+| **Training target and labeler entry used mid-range prices** (non-tradable). Confirmed as the source of the inflated 0.62 offline AUC. | Fixed in v4.2 (close-to-close target, `Close` entry); offline only, not forward-tested |
+| **Duplicate rows in the Gold decision log** (604 rows, 379 distinct hours; the Friday-close hour appears 44–51 times). | Explained by the market-closed bug; logs kept as recorded, analysis scripts keep the first row per hour |
 | **Statistical power.** 62 trades, one regime, one month. | Needs 150–200+ trades across trending, ranging and shock regimes |
 | **No transaction costs in training or offline metrics.** The training script creates a constant `Spread` column but never uses it, so offline labels and metrics are gross of spread, slippage and requotes. Only the demo forward test reflects real fills. | Open |
 | **Train/serve skew in the meta-model.** It is trained on every bar with the side taken at P ≥ 0.50, but live it only sees signals outside the 0.45–0.55 dead-band. Offline rejection rates are therefore not comparable with live ones. | Open |
